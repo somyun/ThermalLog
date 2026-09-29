@@ -1,0 +1,17 @@
+# Only source code and Markdown are tracked.
+*
+!*/
+!*.md
+!*.py
+!*.ahk
+!*.js
+!*.html
+!*.css
+
+# Runtime data, generated output, vendored browser bundles, and application caches.
+app/data/
+ui/lib/
+output/
+prototype_output/
+**/photo-cache/
+.git/

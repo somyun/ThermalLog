@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>열화상 일지</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div id="app" v-cloak>
+    <main class="app" :class="{ 'matching-mode': matchingReady || marker.active }">
+      <header class="app-header">
+        <div class="app-title">
+          <span class="app-symbol" aria-hidden="true"></span>
+          <strong>열화상 일지</strong>
+        </div>
+        <span class="host-indicator" :class="{ online: hostReady }">{{ hostReady ? '준비됨' : '준비 중' }}</span>
+      </header>
+
+      <section class="progress" aria-label="일지 작성 진행 단계">
+        <div class="progress-text">
+          <span>{{ camera.connected ? currentStep : '준비' }}</span>
+          <span v-if="camera.connected">/ 3</span>
+        </div>
+        <div class="progress-track">
+          <span :style="{ width: camera.connected ? `${currentStep / 3 * 100}%` : '8%' }"></span>
+        </div>
+      </section>
+
+      <section v-if="marker.active" class="marker-workspace">
+        <div v-if="marker.loading && marker.itemIndex === 0" class="center-step marker-preparing">
+          <div class="loading-ring" aria-hidden="true"></div>
+          <p class="step-label">3단계 준비</p>
+          <h1>온도마커 작업을<br>준비하고 있습니다</h1>
+        </div>
+
+        <div v-else-if="marker.complete" class="center-step marker-complete">
+          <template v-if="journal.complete">
+            <div class="marker-complete-icon" aria-hidden="true">✓</div>
+            <p class="step-label">일지 작성 완료</p>
+            <h1>열화상 일지가<br>완성되었습니다</h1>
+            <p class="result-file-name">{{ journal.fileName }}</p>
+            <div class="result-summary">
+              <span>항목 <strong>{{ journal.itemCount }}</strong>개</span>
+              <span>사진 <strong>{{ journal.imageCount }}</strong>장</span>
+              <span>온도 <strong>{{ journal.temperatureCount }}</strong>개</span>
+            </div>
+            <div class="result-actions">
+              <button class="primary-button compact" type="button" @click="openResultFile">완성 문서 열기</button>
+              <button class="secondary-button compact" type="button" @click="openResultFolder">결과 폴더 열기</button>
+              <button class="text-button new-work-button" type="button" @click="startNewWork">새 작업 시작</button>
+            </div>
+            <p v-if="journal.cleanupWarning" class="completion-warning">{{ journal.cleanupWarning }}</p>
+          </template>
+
+          <template v-else>
+            <div v-if="journal.generating" class="loading-ring" aria-hidden="true"></div>
+            <div v-else class="marker-complete-icon" aria-hidden="true">✓</div>
+            <p class="step-label">3단계 완료</p>
+            <h1>{{ journal.generating ? '열화상 일지를\n만들고 있습니다' : '모든 온도마커를\n표시했습니다' }}</h1>
+            <p class="description">
+              {{ journal.generating ? '사진과 온도값을 문서에 넣고 구조를 검사하는 중입니다.' : '처리된 사진과 온도값으로 최종 HWPX 문서를 만들 수 있습니다.' }}
+            </p>
+            <button class="primary-button" type="button" @click="generateJournal" :disabled="journal.generating">
+              {{ journal.generating ? '문서 생성 및 검증 중…' : '완성 일지 저장하기' }}
+            </button>
+          </template>
+        </div>
+
+        <template v-else>
+          <header class="marker-header">
+            <div>
+              <p class="step-label">3단계 · 온도마커</p>
+              <h1>{{ marker.itemLabel }}</h1>
+              <p>{{ marker.itemIndex }} / {{ marker.totalItems }}번째 항목 · {{ marker.baseName }}</p>
+            </div>
+            <div class="marker-progress-count">
+              <strong>{{ marker.itemIndex }}</strong>
+              <span>/ {{ marker.totalItems }}</span>
+            </div>
+          </header>
+
+          <div class="marker-layout">
+            <section class="marker-image-panel">
+              <div class="marker-image-toolbar">
+                <div>
+                  <strong>{{ marker.previewMode === 'thermal' ? '열화상' : '실화상' }} 미리보기</strong>
+                  <span>{{ marker.minTemperature }} ~ {{ marker.maxTemperature }} °C</span>
+                </div>
+                <button class="secondary-button compact" type="button" @click="toggleMarkerPreview" :disabled="marker.loading">
+                  {{ marker.previewMode === 'thermal' ? '실화상 보기' : '열화상 보기' }}
+                </button>
+              </div>
+              <div class="marker-canvas-wrap" :class="{ busy: marker.loading }">
+                <img
+                  class="marker-canvas"
+                  :src="markerPreviewUrl()"
+                  :alt="`${marker.itemLabel} 온도마커 이미지`"
+                  @click="addMarker"
+                  draggable="false"
+                >
+                <div v-if="marker.loading" class="marker-busy"><div class="loading-ring"></div></div>
+              </div>
+              <p class="marker-help">온도를 표시할 위치를 사진에서 클릭하세요.</p>
+            </section>
+
+            <aside class="marker-side-panel">
+              <header>
+                <div>
+                  <strong>표시한 온도</strong>
+                  <span>{{ marker.markers.length }}개</span>
+                </div>
+                <button class="text-button" type="button" @click="clearMarkers" :disabled="marker.loading || marker.markers.length === 0">전체 지우기</button>
+              </header>
+
+              <ol v-if="marker.markers.length" class="temperature-list">
+                <li v-for="(point, index) in marker.markers" :key="`${point.x}-${point.y}-${index}`">
+                  <span>{{ index + 1 }}</span>
+                  <strong>{{ point.displayTemperature }} °C</strong>
+                </li>
+              </ol>
+              <div v-else class="temperature-empty">아직 표시한 온도가 없습니다.</div>
+
+              <div class="marker-shortcut">
+                <kbd>Space</kbd>
+                <span>저장하고 다음 사진</span>
+              </div>
+            </aside>
+          </div>
+
+          <footer class="marker-footer">
+            <button class="secondary-button compact" type="button" @click="openPreviousMarkerItem" :disabled="marker.loading || !marker.canGoPrevious">이전 항목</button>
+            <p v-if="marker.markers.length">마커를 확인한 뒤 스페이스바를 누르세요.</p>
+            <p v-else>온도마커를 하나 이상 표시해 주세요.</p>
+            <button class="primary-button compact" type="button" @click="saveMarkerAndNext" :disabled="marker.loading || marker.markers.length === 0">
+              {{ marker.itemIndex === marker.totalItems ? '마커 작업 완료' : '저장하고 다음' }}
+            </button>
+          </footer>
+        </template>
+      </section>
+
+      <section v-else-if="!camera.connected" class="center-step">
+        <div class="status-icon" aria-hidden="true"><span></span></div>
+        <p class="step-label">시작 전 준비</p>
+        <h1>열화상카메라를<br>연결해 주세요</h1>
+        <p class="description">USB로 연결하면 자동으로 다음 단계로 이동합니다.</p>
+        <button class="secondary-button" type="button" @click="refreshDevice" :disabled="isRefreshing">
+          <span :class="{ spinning: isRefreshing }">↻</span> 연결 상태 다시 확인
+        </button>
+      </section>
+
+      <section v-else-if="template.items.length === 0" class="center-step">
+        <div class="connected-chip"><span></span>{{ camera.testSource ? '테스트 사진 사용 중' : '카메라 연결됨' }}</div>
+        <p class="step-label">1단계</p>
+        <h1>과거 일지를<br>선택해 주세요</h1>
+        <p class="description">
+          선택한 일지의 양식과 점검항목을 사용합니다.
+          <button class="info-button" type="button" data-tooltip="HWPX 일지를 선택하세요. 원본 파일은 변경하지 않습니다.">i</button>
+        </p>
+        <button class="primary-button" type="button" @click="selectTemplate" :disabled="template.analyzing">
+          {{ template.analyzing ? '양식 확인 중…' : '양식 선택하기' }}
+        </button>
+      </section>
+
+      <section v-else-if="!matchingReady" class="center-step">
+        <div class="loading-ring" aria-hidden="true"></div>
+        <p class="step-label">2단계 준비</p>
+        <h1>항목과 사진을<br>불러오고 있습니다</h1>
+        <p class="description">카메라 사진을 촬영 순서대로 정리하는 중입니다.</p>
+      </section>
+
+      <section v-else class="matching-workspace">
+        <header class="workspace-header">
+          <div>
+            <p class="step-label">2단계 · 사진 매칭</p>
+            <h1>항목에 사진을 넣어 주세요</h1>
+            <p>
+              오른쪽 사진을 왼쪽 칸으로 끌어다 놓으세요.
+              <button class="info-button" type="button" data-tooltip="체크를 해제한 항목은 순서대로 넣기에서 제외됩니다. 배치된 사진을 선택하고 Delete 키를 누르거나 사진 풀로 끌어내면 제거됩니다.">i</button>
+            </p>
+          </div>
+          <div class="workspace-actions">
+            <button class="secondary-button compact" type="button" @click="selectTemplate">양식 다시 선택</button>
+          </div>
+        </header>
+
+        <div class="workspace-columns">
+          <section class="mapping-panel">
+            <header class="panel-header">
+              <div>
+                <strong>점검항목</strong>
+                <span>{{ matchedCount }} / {{ enabledCount }}개 배치</span>
+              </div>
+              <button
+                class="text-button"
+                type="button"
+                :disabled="matchedCount === 0"
+                @click="clearAllAssignments"
+              >배치 사진 전체 해제</button>
+            </header>
+
+            <div class="mapping-list">
+              <section v-for="table in template.tables" :key="`${table.sectionPath}-${table.tableIndex}`" class="mapping-group">
+                <header v-if="template.tables.length > 1">
+                  <strong>표 {{ table.order }}</strong>
+                  <span>{{ table.itemCount }}개 항목</span>
+                </header>
+
+                <article
+                  v-for="item in table.items"
+                  :key="item.id"
+                  class="mapping-row"
+                  :class="{ disabled: !isItemEnabled(item.id) }"
+                >
+                  <label class="item-check" :title="isItemEnabled(item.id) ? '사진을 사용하는 항목' : '사진을 찍지 않은 항목'">
+                    <input
+                      type="checkbox"
+                      :checked="isItemEnabled(item.id)"
+                      @change="setItemEnabled(item.id, $event.target.checked)"
+                    >
+                    <span></span>
+                  </label>
+
+                  <div class="item-name">
+                    <small v-if="item.group">{{ item.group }}</small>
+                    <strong>{{ item.name }}</strong>
+                  </div>
+
+                  <div
+                    class="drop-slot"
+                    :class="{
+                      occupied: assignedPhoto(item.id),
+                      selected: selectedItemId === item.id,
+                      over: dragOverItemId === item.id,
+                      disabled: !isItemEnabled(item.id)
+                    }"
+                    @dragover.prevent="dragOverItemId = item.id"
+                    @dragleave="dragOverItemId = ''"
+                    @drop="dropOnItem($event, item.id)"
+                    @click="selectAssignment(item.id)"
+                  >
+                    <template v-if="assignedPhoto(item.id)">
+                      <img
+                        :src="thumbnailUrl(assignedPhoto(item.id).previewFileName)"
+                        :alt="`${assignedPhoto(item.id).baseName} 실화상`"
+                        draggable="true"
+                        @dragstart="startPhotoDrag($event, assignedPhoto(item.id).id, item.id)"
+                      >
+                      <div class="slot-caption">
+                        <strong>{{ assignedPhoto(item.id).baseName }}</strong>
+                        <span>{{ assignedPhoto(item.id).captureTime }}</span>
+                      </div>
+                      <button type="button" class="remove-photo" @click.stop="removeAssignment(item.id)" title="사진 빼기">×</button>
+                    </template>
+                    <span v-else class="slot-placeholder">
+                      {{ isItemEnabled(item.id) ? '사진을 이곳에 놓으세요' : '사진 없음' }}
+                    </span>
+                  </div>
+                </article>
+              </section>
+            </div>
+          </section>
+
+          <section
+            class="pool-panel"
+            @dragover.prevent
+            @drop="dropOnPool"
+          >
+            <header class="panel-header">
+              <div>
+                <strong>사진 풀</strong>
+                <span>{{ poolPhotos.length }}개 남음 · {{ selectedPhotoCount }}개 선택</span>
+              </div>
+              <div class="panel-actions">
+                <button class="info-button panel-help" type="button" data-tooltip="최근 촬영 날짜부터 표시하며, 같은 날짜 안에서는 오래된 촬영 시간 순서입니다. 표시되는 사진은 Y 실화상이며 X 열화상은 자동으로 함께 이동합니다.">i</button>
+                <button class="primary-button compact" type="button" @click="autoAssign" :disabled="selectedPhotoCount === 0">
+                  순서대로 넣기 <span v-if="selectedPhotoCount">({{ selectedPhotoCount }})</span>
+                </button>
+              </div>
+            </header>
+
+            <div class="pool-content">
+              <div v-if="poolPhotos.length === 0" class="pool-empty">모든 사진이 항목에 배치되었습니다.</div>
+              <section v-for="group in groupedPoolPhotos" :key="group.date" class="pool-date-group">
+                <header>
+                  <label
+                    class="pool-check date-check"
+                    :class="{ partial: dateSelectionState(group.photos) === 'partial' }"
+                    title="이 날짜의 사진 전체 선택 또는 해제"
+                  >
+                    <input
+                      type="checkbox"
+                      :checked="dateSelectionState(group.photos) === 'all'"
+                      @change="toggleDateSelection(group.photos)"
+                    >
+                    <span></span>
+                    <strong>{{ formatDate(group.date) }}</strong>
+                  </label>
+                  <span>{{ group.photos.length }}개</span>
+                </header>
+                <div class="pool-grid">
+                  <article
+                    v-for="item in group.photos"
+                    :key="item.id"
+                    class="pool-photo"
+                    draggable="true"
+                    @dragstart="startPhotoDrag($event, item.id, '')"
+                  >
+                    <label class="pool-check photo-check" title="순서대로 넣을 사진 선택" @click.stop>
+                      <input
+                        type="checkbox"
+                        :checked="isPhotoSelected(item.id)"
+                        @change.stop="setPhotoSelected(item.id, $event.target.checked)"
+                      >
+                      <span></span>
+                    </label>
+                    <img :src="thumbnailUrl(item.previewFileName)" :alt="`${item.baseName} 실화상`">
+                    <div>
+                      <strong>{{ item.baseName }}</strong>
+                      <span>{{ item.captureTime }}</span>
+                    </div>
+                  </article>
+                </div>
+              </section>
+            </div>
+          </section>
+        </div>
+
+        <footer class="workspace-footer">
+          <p v-if="!canContinue">체크된 모든 항목에 사진을 넣어 주세요.</p>
+          <p v-else>{{ matchedCount }}개 항목의 사진 배치가 완료되었습니다.</p>
+          <button class="primary-button compact" type="button" :disabled="!canContinue" @click="confirmMatching">사진 매칭 완료</button>
+        </footer>
+      </section>
+
+      <footer v-if="!matchingReady" class="app-footer">
+        원본 파일과 카메라 사진은 수정하지 않습니다.
+      </footer>
+
+      <transition name="toast">
+        <div v-if="notice.visible" class="toast" :class="notice.level" role="status">
+          <span>{{ notice.message }}</span>
+          <button type="button" @click="notice.visible = false">×</button>
+        </div>
+      </transition>
+    </main>
+  </div>
+
+  <script src="./lib/vue.global.prod.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
+
